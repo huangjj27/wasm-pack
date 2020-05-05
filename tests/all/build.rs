@@ -9,6 +9,7 @@ fn build_in_non_crate_directory_doesnt_panic() {
     fixture
         .wasm_pack()
         .arg("build")
+        .arg(".")
         .assert()
         .failure()
         .stderr(predicates::str::contains("missing a `Cargo.toml`"));
@@ -17,7 +18,6 @@ fn build_in_non_crate_directory_doesnt_panic() {
 #[test]
 fn it_should_build_js_hello_world_example() {
     let fixture = utils::fixture::js_hello_world();
-    fixture.install_local_wasm_bindgen();
     fixture.wasm_pack().arg("build").assert().success();
 }
 
@@ -47,7 +47,7 @@ fn it_should_build_crates_in_a_workspace() {
                 crate-type = ["cdylib"]
 
                 [dependencies]
-                wasm-bindgen = "=0.2.21"
+                wasm-bindgen = "0.2"
             "#,
         )
         .file(
@@ -87,7 +87,7 @@ fn renamed_crate_name_works() {
                 name = 'bar'
 
                 [dependencies]
-                wasm-bindgen = "=0.2.21"
+                wasm-bindgen = "0.2"
             "#,
         )
         .file(
@@ -102,6 +102,54 @@ fn renamed_crate_name_works() {
         )
         .install_local_wasm_bindgen();
     fixture.wasm_pack().arg("build").assert().success();
+}
+
+#[test]
+fn dash_dash_web_target_has_error_on_old_bindgen() {
+    let fixture = utils::fixture::Fixture::new();
+    fixture
+        .readme()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                authors = []
+
+                [lib]
+                crate-type = ["cdylib"]
+                name = 'bar'
+
+                [dependencies]
+                wasm-bindgen = "=0.2.37"
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            r#"
+                extern crate wasm_bindgen;
+                use wasm_bindgen::prelude::*;
+
+                #[wasm_bindgen]
+                pub fn one() -> u32 { 1 }
+            "#,
+        )
+        .install_local_wasm_bindgen();
+    let cmd = fixture
+        .wasm_pack()
+        .arg("build")
+        .arg("--target")
+        .arg("web")
+        .assert()
+        .failure();
+    let output = String::from_utf8(cmd.get_output().stderr.clone()).unwrap();
+
+    assert!(
+        output.contains("0.2.39"),
+        "Output did not contain '0.2.39', output was {}",
+        output
+    );
 }
 
 #[test]
@@ -175,11 +223,15 @@ fn build_with_and_without_wasm_bindgen_debug() {
 
                 #[wasm_bindgen]
                 impl MyThing {
+                    #[wasm_bindgen(constructor)]
                     pub fn new() -> MyThing {
                         MyThing {}
                     }
+                }
 
-                    pub fn take(self) {}
+                #[wasm_bindgen]
+                pub fn take(foo: MyThing) {
+                    drop(foo);
                 }
                 "#,
             )
@@ -193,10 +245,14 @@ fn build_with_and_without_wasm_bindgen_debug() {
             .success();
 
         let contents = fs::read_to_string(fixture.path.join("pkg/whatever.js")).unwrap();
+        let contains_move_assertions =
+            contents.contains("throw new Error('Attempt to use a moved value')");
         assert_eq!(
-            contents.contains("throw new Error('Attempt to use a moved value')"),
-            debug,
-            "Should only contain moved value assertions when debug assertions are enabled"
+            contains_move_assertions, debug,
+            "Should contain moved value assertions iff debug assertions are enabled. \
+             Contains move assertions? {}. \
+             Is a debug JS glue build? {}.",
+            contains_move_assertions, debug,
         );
     }
 }
@@ -210,6 +266,46 @@ fn build_with_arbitrary_cargo_options() {
         .arg("build")
         .arg("--")
         .arg("--no-default-features")
+        .assert()
+        .success();
+}
+
+#[test]
+fn build_no_install() {
+    let fixture = utils::fixture::js_hello_world();
+    fixture.install_local_wasm_bindgen();
+    fixture
+        .wasm_pack()
+        .arg("build")
+        .arg("--mode")
+        .arg("no-install")
+        .assert()
+        .success();
+}
+
+#[test]
+fn build_force() {
+    let fixture = utils::fixture::js_hello_world();
+    fixture.install_local_wasm_bindgen();
+    fixture
+        .wasm_pack()
+        .arg("build")
+        .arg("--mode")
+        .arg("force")
+        .assert()
+        .success();
+}
+
+#[test]
+fn build_from_new() {
+    let fixture = utils::fixture::not_a_crate();
+    let name = "generated-project";
+    fixture.wasm_pack().arg("new").arg(name).assert().success();
+    let project_location = fixture.path.join(&name);
+    fixture
+        .wasm_pack()
+        .arg("build")
+        .arg(&project_location)
         .assert()
         .success();
 }

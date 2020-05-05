@@ -7,10 +7,11 @@ use std::fs;
 use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{MutexGuard, Once, ONCE_INIT};
+use std::sync::{MutexGuard, Once};
 use std::thread;
 use tempfile::TempDir;
 use wasm_pack;
+use wasm_pack::install::{self, Tool};
 
 /// A test fixture in a temporary directory.
 pub struct Fixture {
@@ -26,7 +27,7 @@ impl Fixture {
     pub fn new() -> Fixture {
         // Make sure that all fixtures end up sharing a target dir, and we don't
         // recompile wasm-bindgen and friends many times over.
-        static SET_TARGET_DIR: Once = ONCE_INIT;
+        static SET_TARGET_DIR: Once = Once::new();
         let target_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
         SET_TARGET_DIR.call_once(|| {
             env::set_var("CARGO_TARGET_DIR", &target_dir);
@@ -66,6 +67,16 @@ impl Fixture {
             r#"
                 # Fixture!
                 > an example rust -> wasm project
+            "#,
+        )
+    }
+
+    /// Add `LICENSE` file to the fixture.
+    pub fn license(&self) -> &Self {
+        self.file(
+            "LICENSE",
+            r#"
+                I'm a license!
             "#,
         )
     }
@@ -130,10 +141,15 @@ impl Fixture {
                     crate-type = ["cdylib"]
 
                     [dependencies]
-                    wasm-bindgen = "=0.2.21"
+                    # Note that this uses and `=` dependency because there are
+                    # various tests which assert that the version of wasm
+                    # bindgen downloaded is what we expect, and if `=` is
+                    # removed then it will download whatever the newest version
+                    # of wasm-bindgen is which may not be what's listed here.
+                    wasm-bindgen = "=0.2.37"
 
                     [dev-dependencies]
-                    wasm-bindgen-test = "=0.2.21"
+                    wasm-bindgen-test = "0.2"
                 "#,
                 name
             ),
@@ -202,18 +218,22 @@ impl Fixture {
     /// Takes care not to re-install for every fixture, but only the one time
     /// for the whole test suite.
     pub fn install_local_wasm_bindgen(&self) -> PathBuf {
-        static INSTALL_WASM_BINDGEN: Once = ONCE_INIT;
+        // If wasm-bindgen is being used then it's very likely wasm-opt is going
+        // to be used as well.
+        self.install_wasm_opt();
+
+        static INSTALL_WASM_BINDGEN: Once = Once::new();
         let cache = self.cache();
-        let version = "0.2.21";
+        let version = "0.2.37";
 
         let download = || {
             if let Ok(download) =
-                wasm_pack::bindgen::download_prebuilt_wasm_bindgen(&cache, version, true)
+                install::download_prebuilt(&Tool::WasmBindgen, &cache, version, true)
             {
                 return Ok(download);
             }
 
-            wasm_pack::bindgen::cargo_install_wasm_bindgen(&cache, version, true)
+            install::cargo_install(Tool::WasmBindgen, &cache, version, true)
         };
 
         // Only one thread can perform the actual download, and then afterwards
@@ -221,7 +241,50 @@ impl Fixture {
         INSTALL_WASM_BINDGEN.call_once(|| {
             download().unwrap();
         });
-        download().unwrap().binary("wasm-bindgen").unwrap()
+        if let install::Status::Found(dl) = download().unwrap() {
+            dl.binary("wasm-bindgen").unwrap()
+        } else {
+            panic!("Download failed")
+        }
+    }
+
+    pub fn install_wasm_opt(&self) {
+        static INSTALL_WASM_OPT: Once = Once::new();
+        let cache = self.cache();
+
+        INSTALL_WASM_OPT.call_once(|| {
+            wasm_pack::wasm_opt::find_wasm_opt(&cache, true).unwrap();
+        });
+    }
+
+    /// Install a local cargo-generate for this fixture.
+    ///
+    /// Takes care not to re-install for every fixture, but only the one time
+    /// for the whole test suite.
+    pub fn install_local_cargo_generate(&self) -> PathBuf {
+        static INSTALL_CARGO_GENERATE: Once = Once::new();
+        let cache = self.cache();
+
+        let download = || {
+            if let Ok(download) =
+                install::download_prebuilt(&Tool::CargoGenerate, &cache, "latest", true)
+            {
+                return Ok(download);
+            }
+
+            install::cargo_install(Tool::CargoGenerate, &cache, "latest", true)
+        };
+
+        // Only one thread can perform the actual download, and then afterwards
+        // everything will hit the cache so we can run the same path.
+        INSTALL_CARGO_GENERATE.call_once(|| {
+            download().unwrap();
+        });
+        if let install::Status::Found(dl) = download().unwrap() {
+            dl.binary("cargo-generate").unwrap()
+        } else {
+            panic!("Download failed")
+        }
     }
 
     /// Download `geckodriver` and return its path.
@@ -229,7 +292,7 @@ impl Fixture {
     /// Takes care to ensure that only one `geckodriver` is downloaded for the whole
     /// test suite.
     pub fn install_local_geckodriver(&self) -> PathBuf {
-        static FETCH_GECKODRIVER: Once = ONCE_INIT;
+        static FETCH_GECKODRIVER: Once = Once::new();
         let cache = self.cache();
 
         // like above for synchronization
@@ -244,7 +307,7 @@ impl Fixture {
     /// Takes care to ensure that only one `chromedriver` is downloaded for the whole
     /// test suite.
     pub fn install_local_chromedriver(&self) -> PathBuf {
-        static FETCH_CHROMEDRIVER: Once = ONCE_INIT;
+        static FETCH_CHROMEDRIVER: Once = Once::new();
         let cache = self.cache();
 
         // like above for synchronization
@@ -285,7 +348,7 @@ impl Fixture {
     /// directory and using the test cache.
     pub fn wasm_pack(&self) -> Command {
         use assert_cmd::prelude::*;
-        let mut cmd = Command::main_binary().unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
         cmd.current_dir(&self.path);
         cmd.env("WASM_PACK_CACHE", self.cache_dir());
         cmd
@@ -354,10 +417,10 @@ pub fn no_cdylib() -> Fixture {
             # crate-type = ["cdylib"]
 
             [dependencies]
-            wasm-bindgen = "=0.2.21"
+            wasm-bindgen = "0.2"
 
             [dev-dependencies]
-            wasm-bindgen-test = "=0.2.21"
+            wasm-bindgen-test = "0.2"
         "#,
     );
     fixture
@@ -406,14 +469,14 @@ pub fn wbg_test_diff_versions() -> Fixture {
                 crate-type = ["cdylib", "rlib"]
 
                 [dependencies]
-                # We depend on wasm-bindgen 0.2.21
-                wasm-bindgen = "=0.2.21"
+                # We depend on the latest wasm-bindgen 0.2
+                wasm-bindgen = "0.2"
 
                 [dev-dependencies]
-                # And we depend on wasm-bindgen-test 0.2.19. This should still
-                # work, and we should end up with `wasm-bindgen` at 0.2.21 and
-                # wasm-bindgen-test at 0.2.19, and everything should still work.
-                wasm-bindgen-test = "0.2.19"
+                # And we depend on wasm-bindgen-test 0.2.29. This should still
+                # work, and we should end up with the latest `wasm-bindgen` and
+                # wasm-bindgen-test at 0.2.29, and everything should still work.
+                wasm-bindgen-test = "0.2.29"
             "#,
         )
         .file(
@@ -525,12 +588,12 @@ pub fn transitive_dependencies() -> Fixture {
             crate-type = ["cdylib"]
 
             [dependencies]
-            wasm-bindgen = "=0.2.21"
+            wasm-bindgen = "0.2"
             project_a = { path = "../project_a" }
             project_b = { path = "../project_b" }
 
             [dev-dependencies]
-            wasm-bindgen-test = "=0.2.21"
+            wasm-bindgen-test = "0.2"
         "#,
         );
         fixture.file(
@@ -575,11 +638,11 @@ pub fn transitive_dependencies() -> Fixture {
             crate-type = ["cdylib"]
 
             [dependencies]
-            wasm-bindgen = "=0.2.21"
+            wasm-bindgen = "0.2"
             project_b = { path = "../project_b" }
 
             [dev-dependencies]
-            wasm-bindgen-test = "=0.2.21"
+            wasm-bindgen-test = "0.2"
         "#,
         );
         fixture.file(
@@ -625,10 +688,10 @@ pub fn transitive_dependencies() -> Fixture {
             crate-type = ["cdylib"]
 
             [dependencies]
-            wasm-bindgen = "=0.2.21"
+            wasm-bindgen = "0.2"
 
             [dev-dependencies]
-            wasm-bindgen-test = "=0.2.21"
+            wasm-bindgen-test = "0.2"
         "#,
         );
         fixture.file(
@@ -665,7 +728,7 @@ pub fn single_license() -> Fixture {
     fixture
         .readme()
         .cargo_toml("single_license")
-        .wtfpl_license()
+        .license()
         .hello_world_src_lib();
     fixture
 }

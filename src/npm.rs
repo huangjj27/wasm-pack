@@ -17,14 +17,18 @@ pub fn npm_pack(path: &str) -> Result<(), failure::Error> {
 }
 
 /// Run the `npm publish` command.
-pub fn npm_publish(path: &str, access: Option<Access>) -> Result<(), failure::Error> {
+pub fn npm_publish(
+    path: &str,
+    access: Option<Access>,
+    tag: Option<String>,
+) -> Result<(), failure::Error> {
     let mut cmd = child::new_command("npm");
     match access {
-        Some(a) => cmd
-            .current_dir(path)
-            .arg("publish")
-            .arg(&format!("{}", a.to_string())),
+        Some(a) => cmd.current_dir(path).arg("publish").arg(&a.to_string()),
         None => cmd.current_dir(path).arg("publish"),
+    };
+    if let Some(tag) = tag {
+        cmd.arg("--tag").arg(tag);
     };
 
     child::run(cmd, "npm publish").context("Publishing to npm failed")?;
@@ -38,14 +42,14 @@ pub fn npm_login(
     always_auth: bool,
     auth_type: &Option<String>,
 ) -> Result<(), failure::Error> {
-    let mut args = vec![format!("login"), format!("--registry={}", registry)];
+    let mut args = vec!["login".to_string(), format!("--registry={}", registry)];
 
     if let Some(scope) = scope {
         args.push(format!("--scope={}", scope));
     }
 
     if always_auth {
-        args.push(format!("--always_auth"));
+        args.push("--always_auth".to_string());
     }
 
     if let Some(auth_type) = auth_type {
@@ -58,8 +62,9 @@ pub fn npm_login(
     cmd.args(args);
 
     info!("Running {:?}", cmd);
-    match cmd.status()?.success() {
-        true => Ok(()),
-        false => bail!("Login to registry {} failed", registry),
+    if cmd.status()?.success() {
+        Ok(())
+    } else {
+        bail!("Login to registry {} failed", registry)
     }
 }

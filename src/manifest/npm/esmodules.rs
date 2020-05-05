@@ -20,5 +20,7 @@ pub struct ESModulesPackage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub types: Option<String>,
     #[serde(rename = "sideEffects")]
-    pub side_effects: String,
+    pub side_effects: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keywords: Option<Vec<String>>,
 }
