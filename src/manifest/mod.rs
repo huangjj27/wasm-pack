@@ -424,7 +424,10 @@ impl CrateData {
         let current_idx = data
             .packages
             .iter()
-            .position(|pkg| pkg.name == manifest.package.name)
+            .position(|pkg| {
+                pkg.name == manifest.package.name
+                    && CrateData::is_same_path(&pkg.manifest_path, &manifest_path)
+            })
             .ok_or_else(|| format_err!("failed to find package in metadata"))?;
 
         Ok(CrateData {
@@ -433,6 +436,15 @@ impl CrateData {
             current_idx,
             out_name,
         })
+    }
+
+    fn is_same_path(path1: &Path, path2: &Path) -> bool {
+        if let Ok(path1) = fs::canonicalize(&path1) {
+            if let Ok(path2) = fs::canonicalize(&path2) {
+                return path1 == path2;
+            }
+        }
+        path1 == path2
     }
 
     /// Read the `manifest_path` file and deserializes it using the toml Deserializer.
@@ -579,7 +591,7 @@ impl CrateData {
     fn npm_data(
         &self,
         scope: &Option<String>,
-        include_commonjs_shim: bool,
+        add_js_bg_to_package_json: bool,
         disable_dts: bool,
         out_dir: &Path,
     ) -> NpmData {
@@ -589,7 +601,7 @@ impl CrateData {
         let mut files = vec![wasm_file];
 
         files.push(js_file.clone());
-        if include_commonjs_shim {
+        if add_js_bg_to_package_json {
             let js_bg_file = format!("{}_bg.js", name_prefix);
             files.push(js_bg_file);
         }
@@ -646,7 +658,7 @@ impl CrateData {
     }
 
     fn to_commonjs(&self, scope: &Option<String>, disable_dts: bool, out_dir: &Path) -> NpmPackage {
-        let data = self.npm_data(scope, true, disable_dts, out_dir);
+        let data = self.npm_data(scope, false, disable_dts, out_dir);
         let pkg = &self.data.packages[self.current_idx];
 
         self.check_optional_fields();
@@ -680,7 +692,7 @@ impl CrateData {
         disable_dts: bool,
         out_dir: &Path,
     ) -> NpmPackage {
-        let data = self.npm_data(scope, false, disable_dts, out_dir);
+        let data = self.npm_data(scope, true, disable_dts, out_dir);
         let pkg = &self.data.packages[self.current_idx];
 
         self.check_optional_fields();
